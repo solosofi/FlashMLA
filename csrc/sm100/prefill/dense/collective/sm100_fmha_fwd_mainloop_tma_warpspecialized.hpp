@@ -45,6 +45,18 @@ namespace cutlass::fmha::collective {
 
 using namespace cute;
 
+// Fast exponential approximation using PTX for SM100
+__device__ __forceinline__ float fast_exp2(float x) {
+    float res;
+    asm("ex2.approx.ftz.f32 %0, %1;" : "=f"(res) : "f"(x));
+    return res;
+}
+
+// Fast fmax using intrinsics
+__device__ __forceinline__ float fast_fmax(float a, float b) {
+    return fmaxf(a, b);
+}
+
 template<
   class Element_,
   class ElementQK_,
@@ -581,14 +593,14 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
       float row_max_3 = row_max;
       CUTLASS_PRAGMA_UNROLL
       for (int i = 0; i < size(tTMEM_LOADrS); i += 4) {
-        row_max_0  = ::fmax(row_max_0, tTMEM_LOADrS(i));
-        row_max_1 = ::fmax(row_max_1, tTMEM_LOADrS(i+1));
-        row_max_2 = ::fmax(row_max_2, tTMEM_LOADrS(i+2));
-        row_max_3 = ::fmax(row_max_3, tTMEM_LOADrS(i+3));
+        row_max_0  = fast_fmax(row_max_0, tTMEM_LOADrS(i));
+        row_max_1 = fast_fmax(row_max_1, tTMEM_LOADrS(i+1));
+        row_max_2 = fast_fmax(row_max_2, tTMEM_LOADrS(i+2));
+        row_max_3 = fast_fmax(row_max_3, tTMEM_LOADrS(i+3));
       }
-      row_max = ::fmax(row_max_0, row_max_1);
-      row_max = ::fmax(row_max, row_max_2);
-      row_max = ::fmax(row_max, row_max_3);
+      row_max = fast_fmax(row_max_0, row_max_1);
+      row_max = fast_fmax(row_max, row_max_2);
+      row_max = fast_fmax(row_max, row_max_3);
     }
 
     ElementQK row_max_safe = row_max == -INFINITY ? 0 : row_max;
@@ -632,8 +644,8 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
       tTMEM_LOADrS(i + 0) = out.x;
       tTMEM_LOADrS(i + 1) = out.y;
 
-      tTMEM_LOADrS(i+0) = ::exp2f(tTMEM_LOADrS(i+0));
-      tTMEM_LOADrS(i+1) = ::exp2f(tTMEM_LOADrS(i+1));
+      tTMEM_LOADrS(i+0) = fast_exp2(tTMEM_LOADrS(i+0));
+      tTMEM_LOADrS(i+1) = fast_exp2(tTMEM_LOADrS(i+1));
 
       Array<ElementQK, kConversionsPerStep> in_conv;
       CUTLASS_PRAGMA_UNROLL
@@ -668,7 +680,7 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
 
     pipeline_c.producer_acquire(pipeline_c_producer_state);
 
-    ElementQK acc_scale = 0.5f * ::exp2f(scale * (old_row_max - row_max_safe));
+    ElementQK acc_scale = 0.5f * fast_exp2(scale * (old_row_max - row_max_safe));
     row_sum *= acc_scale;
     // row_sum = sum(reg_S)
     float2 local_row_sum_f32x2 = make_float2(row_sum, row_sum);
@@ -1009,7 +1021,7 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
       copy(tiled_tmem_loadv, tTMEM_LOADVtS0, tTMEM_LOADVrS);
 
       // e^(scale * (old_max - new_max)
-      float scale = ::exp2f(params.scale_softmax_log2 * (tTMEM_LOADVrS(kIdxOldRowMax) - tTMEM_LOADVrS(kIdxNewRowMax)));
+      float scale = fast_exp2(params.scale_softmax_log2 * (tTMEM_LOADVrS(kIdxOldRowMax) - tTMEM_LOADVrS(kIdxNewRowMax)));
 
       pipeline_o.consumer_wait(pipeline_o_consumer_state);
 
@@ -1027,7 +1039,7 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
 
       copy(tiled_tmem_loadv, tTMEM_LOADVtS1, tTMEM_LOADVrS);
 
-      scale = ::exp2f(params.scale_softmax_log2 * (tTMEM_LOADVrS(kIdxOldRowMax) - tTMEM_LOADVrS(kIdxNewRowMax)));
+      scale = fast_exp2(params.scale_softmax_log2 * (tTMEM_LOADVrS(kIdxOldRowMax) - tTMEM_LOADVrS(kIdxNewRowMax)));
 
       pipeline_o.consumer_wait(pipeline_o_consumer_state);
 
